@@ -1,11 +1,6 @@
 name: CD - Terraform Apply / Destroy
 
 on:
-  workflow_run:
-    workflows: ["CI - Build & Push Docker Image (Private ECR)"]
-    types:
-      - completed
-
   workflow_dispatch:
     inputs:
       action:
@@ -43,10 +38,10 @@ jobs:
         run: terraform init
 
       # -----------------------
-      # SAFETY CHECK
+      # SAFETY CHECK FOR DESTROY
       # -----------------------
       - name: Confirm destroy
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
+        if: github.event.inputs.action == 'destroy'
         run: |
           if [ "${{ github.event.inputs.confirm_destroy }}" != "DESTROY" ]; then
             echo "❌ Destroy not confirmed"
@@ -54,19 +49,19 @@ jobs:
           fi
 
       # -----------------------
-      # APPLY (AUTO + MANUAL)
+      # MANUAL APPLY
       # -----------------------
       - name: Terraform Apply
-        if: github.event_name == 'workflow_run' || github.event.inputs.action == 'apply'
+        if: github.event.inputs.action == 'apply'
         working-directory: terraform
         run: |
           terraform apply -auto-approve \
-            -var="image_uri=${{ github.event.workflow_run.outputs.image_uri || secrets.ECR_URI }}"
+            -var="image_uri=${{ secrets.ECR_URI }}"
 
       # -----------------------
-      # DESTROY (MANUAL ONLY)
+      # MANUAL DESTROY
       # -----------------------
       - name: Terraform Destroy
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
+        if: github.event.inputs.action == 'destroy'
         working-directory: terraform
         run: terraform destroy -auto-approve
