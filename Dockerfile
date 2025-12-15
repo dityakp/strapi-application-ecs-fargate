@@ -10,19 +10,17 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Set environment variables for build
-ENV NODE_ENV=production
-ENV DATABASE_CLIENT=postgres
-
 # Copy package files and install dependencies
 COPY package.json package-lock.json* ./
-RUN npm ci
+RUN npm install
 RUN npm install pg --save
 
 # Copy the full project
 COPY . .
 
-# Build Strapi with minimal environment variables
+# Set environment variables for build
+ENV NODE_ENV=production
+ENV DATABASE_CLIENT=postgres
 ENV HOST=0.0.0.0
 ENV PORT=1337
 ENV APP_KEYS=dummy-key-for-build
