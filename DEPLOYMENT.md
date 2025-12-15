@@ -2,6 +2,8 @@
 
 This project deploys a Strapi application on AWS ECS Fargate using Terraform and GitHub Actions.
 
+**Status**: Ready for deployment with GitHub Actions CI/CD pipeline.
+
 ## Architecture
 
 - **ECS Fargate**: Runs the containerized Strapi application
