@@ -1,15 +1,19 @@
-output "public_ip" {
-  description = "Public IP address of the Strapi EC2 instance"
-  value       = aws_instance.strapi.public_ip
+output "ecr_repository_url" {
+  value = aws_ecr_repository.strapi.repository_url
 }
 
-output "strapi_url" {
-  description = "URL to access Strapi"
-  value       = "http://${aws_instance.strapi.public_dns}:${var.strapi_port}"
+output "ecs_cluster_name" {
+  value = aws_ecs_cluster.strapi.name
+}
+
+output "ecs_service_name" {
+  value = aws_ecs_service.strapi.name
+}
+
+output "rds_endpoint" {
+  value = aws_db_instance.strapi_rds.address
 }
 
 output "deployed_image" {
-  description = "Image deployed on EC2"
-  value = var.image_uri != "" ? var.image_uri : "public.ecr.aws/r6f7t4j8/strapi-repo-aditya:${var.image_tag}"
+  value = var.image_uri
 }
-

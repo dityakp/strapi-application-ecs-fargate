@@ -13,24 +13,10 @@ provider "aws" {
 }
 
 # ============================================================
-# ACCOUNT INFO
+# ACCOUNT
 # ============================================================
 
 data "aws_caller_identity" "current" {}
-
-# ============================================================
-# AMI
-# ============================================================
-
-data "aws_ami" "ubuntu" {
-  most_recent = true
-  owners      = ["099720109477"]
-
-  filter {
-    name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
-  }
-}
 
 # ============================================================
 # NETWORK
@@ -48,54 +34,50 @@ data "aws_subnets" "default_subnets" {
 }
 
 # ============================================================
-# IAM — EC2 ROLE (OPTIONAL FOR PUBLIC ECR, SAFE TO KEEP)
+# ECR (PRIVATE)
 # ============================================================
 
-resource "aws_iam_role" "ec2_role" {
-  name = "ec2-ecr-role-aditya"
+resource "aws_ecr_repository" "strapi" {
+  name                 = "strapi-aditya"
+  image_tag_mutability = "MUTABLE"
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [{
-      Effect = "Allow",
-      Principal = {
-        Service = "ec2.amazonaws.com"
-      },
-      Action = "sts:AssumeRole"
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "strapi" {
+  repository = aws_ecr_repository.strapi.name
+
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Keep last 10 images"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        countNumber = 10
+      }
+      action = {
+        type = "expire"
+      }
     }]
   })
 }
 
-resource "aws_iam_role_policy_attachment" "ecr_read" {
-  role       = aws_iam_role.ec2_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-}
-
-resource "aws_iam_instance_profile" "ec2_profile" {
-  name = "ec2-instance-profile-aditya"
-  role = aws_iam_role.ec2_role.name
-}
-
 # ============================================================
-# SECURITY GROUP — STRAPI
+# SECURITY GROUPS
 # ============================================================
 
 resource "aws_security_group" "strapi_sg" {
-  name   = "strapi-sg-aditya"
+  name   = "strapi-ecs-sg-aditya"
   vpc_id = data.aws_vpc.default.id
 
   ingress {
-    from_port   = var.strapi_port
-    to_port     = var.strapi_port
+    from_port   = 1337
+    to_port     = 1337
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.allowed_ssh_cidr]
   }
 
   egress {
@@ -106,16 +88,12 @@ resource "aws_security_group" "strapi_sg" {
   }
 }
 
-# ============================================================
-# RDS
-# ============================================================
-
 resource "aws_security_group" "strapi_rds_sg" {
   name   = "strapi-rds-sg-aditya"
   vpc_id = data.aws_vpc.default.id
 }
 
-resource "aws_security_group_rule" "allow_ec2_to_rds" {
+resource "aws_security_group_rule" "allow_ecs_to_rds" {
   type                     = "ingress"
   from_port                = 5432
   to_port                  = 5432
@@ -123,6 +101,10 @@ resource "aws_security_group_rule" "allow_ec2_to_rds" {
   security_group_id        = aws_security_group.strapi_rds_sg.id
   source_security_group_id = aws_security_group.strapi_sg.id
 }
+
+# ============================================================
+# RDS (POSTGRES)
+# ============================================================
 
 resource "aws_db_subnet_group" "strapi_db_subnet_group" {
   name       = "strapi-db-subnet-group-aditya"
@@ -133,10 +115,11 @@ resource "aws_db_instance" "strapi_rds" {
   identifier             = "strapi-db-aditya"
   allocated_storage      = 20
   engine                 = "postgres"
+  engine_version         = "15"
   instance_class         = "db.t3.micro"
-  username               = "strapi"
-  password               = "strapi123"
-  db_name                = "strapi_db"
+  db_name                = var.db_name
+  username               = var.db_username
+  password               = var.db_password
   skip_final_snapshot    = true
   publicly_accessible    = false
   vpc_security_group_ids = [aws_security_group.strapi_rds_sg.id]
@@ -144,63 +127,64 @@ resource "aws_db_instance" "strapi_rds" {
 }
 
 # ============================================================
-# LOCALS — USER DATA
+# ECS (FARGATE)
 # ============================================================
 
-locals {
-  image_uri = "public.ecr.aws/r6f7t4j8/strapi-repo-aditya:${var.image_tag}"
-
-  user_data = <<-EOF
-    #!/bin/bash
-    set -e
-
-    apt-get update -y
-    apt-get install -y docker.io
-    systemctl start docker
-    systemctl enable docker
-    usermod -aG docker ubuntu
-
-    docker pull ${local.image_uri}
-
-    docker rm -f strapi || true
-
-    docker run -d -p ${var.strapi_port}:1337 \
-      --name strapi \
-      -e HOST=0.0.0.0 \
-      -e PORT=1337 \
-      -e DATABASE_CLIENT=postgres \
-      -e DATABASE_HOST=${aws_db_instance.strapi_rds.address} \
-      -e DATABASE_PORT=5432 \
-      -e DATABASE_NAME=strapi_db \
-      -e DATABASE_USERNAME=strapi \
-      -e DATABASE_PASSWORD=strapi123 \
-      -e DATABASE_SSL=true \
-      -e DATABASE_SSL__REJECT_UNAUTHORIZED=false \
-      -e APP_KEYS="${var.app_keys}" \
-      -e API_TOKEN_SALT="${var.api_token_salt}" \
-      -e ADMIN_JWT_SECRET="${var.admin_jwt_secret}" \
-      -e TRANSFER_TOKEN_SALT="${var.transfer_token_salt}" \
-      -e JWT_SECRET="${var.jwt_secret}" \
-      ${local.image_uri}
-  EOF
+resource "aws_ecs_cluster" "strapi" {
+  name = "strapi-cluster-aditya"
 }
 
+resource "aws_ecs_task_definition" "strapi" {
+  family                   = "strapi-task-aditya"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 512
+  memory                   = 1024
+  execution_role_arn       = aws_iam_role.ecs_execution_role.arn
 
-# ============================================================
-# EC2
-# ============================================================
+  container_definitions = jsonencode([
+    {
+      name      = "strapi-aditya"
+      image     = var.image_uri
+      essential = true
 
-resource "aws_instance" "strapi" {
-  ami                         = data.aws_ami.ubuntu.id
-  instance_type               = var.instance_type
-  vpc_security_group_ids      = [aws_security_group.strapi_sg.id]
-  key_name                    = var.key_name
-  associate_public_ip_address = true
+      portMappings = [{
+        containerPort = 1337
+      }]
 
-  iam_instance_profile = aws_iam_instance_profile.ec2_profile.name
-  user_data            = local.user_data
+      environment = [
+        { name = "HOST", value = "0.0.0.0" },
+        { name = "PORT", value = "1337" },
+        { name = "DATABASE_CLIENT", value = "postgres" },
+        { name = "DATABASE_HOST", value = aws_db_instance.strapi_rds.address },
+        { name = "DATABASE_PORT", value = "5432" },
+        { name = "DATABASE_NAME", value = var.db_name },
+        { name = "DATABASE_USERNAME", value = var.db_username },
+        { name = "DATABASE_PASSWORD", value = var.db_password },
+        { name = "DATABASE_SSL", value = "true" },
+        { name = "DATABASE_SSL__REJECT_UNAUTHORIZED", value = "false" },
+        { name = "APP_KEYS", value = var.app_keys },
+        { name = "API_TOKEN_SALT", value = var.api_token_salt },
+        { name = "ADMIN_JWT_SECRET", value = var.admin_jwt_secret },
+        { name = "TRANSFER_TOKEN_SALT", value = var.transfer_token_salt },
+        { name = "JWT_SECRET", value = var.jwt_secret }
+      ]
+    }
+  ])
+}
 
-  tags = {
-    Name = "strapi-ec2-aditya"
+resource "aws_ecs_service" "strapi" {
+  name            = "strapi-service-aditya"
+  cluster         = aws_ecs_cluster.strapi.id
+  task_definition = aws_ecs_task_definition.strapi.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = data.aws_subnets.default_subnets.ids
+    security_groups  = [aws_security_group.strapi_sg.id]
+    assign_public_ip = true
   }
+
+  depends_on = [aws_db_instance.strapi_rds]
 }
