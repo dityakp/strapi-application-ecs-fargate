@@ -40,8 +40,20 @@ jobs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Get Latest Image Tag
+    - name: Check if ECR Repository Exists
       if: github.event.inputs.action == 'deploy'
+      id: check-repo
+      run: |
+        if aws ecr describe-repositories --repository-names $ECR_REPOSITORY --region $AWS_REGION 2>/dev/null; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+          echo "✅ ECR repository exists"
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "⚠️ ECR repository does not exist - will be created by Terraform"
+        fi
+
+    - name: Get Latest Image Tag
+      if: github.event.inputs.action == 'deploy' && steps.check-repo.outputs.exists == 'true'
       id: get-latest-tag
       run: |
         # Get the latest image tag from ECR (most recently pushed)
@@ -49,19 +61,26 @@ jobs:
           --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' --output text)
         
         if [ "$LATEST_TAG" = "None" ] || [ -z "$LATEST_TAG" ]; then
-          echo "❌ No images found in ECR repository"
-          exit 1
+          echo "⚠️ No images found in ECR repository - using default"
+          echo "tag=latest" >> $GITHUB_OUTPUT
+        else
+          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "🏷️ Latest image tag: $LATEST_TAG"
         fi
-        
-        echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
-        echo "🏷️ Latest image tag: $LATEST_TAG"
+
+    - name: Set Default Image Tag
+      if: github.event.inputs.action == 'deploy' && steps.check-repo.outputs.exists == 'false'
+      id: set-default-tag
+      run: |
+        echo "tag=latest" >> $GITHUB_OUTPUT
+        echo "🏷️ Using default tag: latest"
 
     - name: Set Image URI
       if: github.event.inputs.action == 'deploy'
       id: set-image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ steps.get-latest-tag.outputs.tag }}
+        IMAGE_TAG: ${{ steps.get-latest-tag.outputs.tag || steps.set-default-tag.outputs.tag }}
       run: |
         IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
         echo "image=$IMAGE_URI" >> $GITHUB_OUTPUT
