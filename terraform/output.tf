@@ -18,10 +18,6 @@ output "deployed_image" {
   value = var.image_uri
 }
 
-output "application_url" {
-  value = "http://${aws_lb.strapi_alb.dns_name}"
-}
-
-output "load_balancer_dns" {
-  value = aws_lb.strapi_alb.dns_name
+output "ecs_service_info" {
+  value = "ECS service deployed - check ECS console for task public IPs"
 }
