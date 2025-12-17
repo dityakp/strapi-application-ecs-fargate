@@ -11,10 +11,6 @@ on:
           - deploy
           - destroy
         default: deploy
-      image_tag:
-        description: 'Docker image tag to deploy (e.g., commit SHA) - Required for deploy action'
-        required: false
-        type: string
 
 env:
   AWS_REGION: ap-south-1
@@ -39,38 +35,37 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Validate inputs for deploy
-      if: github.event.inputs.action == 'deploy'
-      run: |
-        if [ -z "${{ github.event.inputs.image_tag }}" ]; then
-          echo "❌ Error: image_tag is required for deploy action"
-          exit 1
-        fi
-        echo "✅ Deploy action validated"
-
     - name: Login to Amazon ECR
       if: github.event.inputs.action == 'deploy'
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Get Latest Image Tag
+      if: github.event.inputs.action == 'deploy'
+      id: get-latest-tag
+      run: |
+        # Get the latest image tag from ECR (most recently pushed)
+        LATEST_TAG=$(aws ecr describe-images --repository-name $ECR_REPOSITORY --region $AWS_REGION \
+          --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' --output text)
+        
+        if [ "$LATEST_TAG" = "None" ] || [ -z "$LATEST_TAG" ]; then
+          echo "❌ No images found in ECR repository"
+          exit 1
+        fi
+        
+        echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+        echo "🏷️ Latest image tag: $LATEST_TAG"
 
     - name: Set Image URI
       if: github.event.inputs.action == 'deploy'
       id: set-image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+        IMAGE_TAG: ${{ steps.get-latest-tag.outputs.tag }}
       run: |
         IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
         echo "image=$IMAGE_URI" >> $GITHUB_OUTPUT
         echo "🐳 Deploying image: $IMAGE_URI"
-
-    - name: Verify Image Exists
-      if: github.event.inputs.action == 'deploy'
-      env:
-        IMAGE_TAG: ${{ github.event.inputs.image_tag }}
-      run: |
-        aws ecr describe-images --repository-name $ECR_REPOSITORY --image-ids imageTag=$IMAGE_TAG --region $AWS_REGION
-        echo "✅ Image verified in ECR"
 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
