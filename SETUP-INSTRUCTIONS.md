@@ -53,25 +53,25 @@ The GitHub Actions workflow will automatically:
 
 ## 5. Access Your Application
 
-After deployment completes, check the GitHub Actions output or Terraform outputs for the Application Load Balancer URL.
+After deployment completes, check the ECS console for the task's public IP address.
 
-Your Strapi application will be available at: `http://your-alb-dns-name`
+Your Strapi application will be available at: `http://task-public-ip:1337`
 
 ## What's Included
 
 ✅ **Infrastructure as Code**: Complete Terraform setup
 ✅ **Container Registry**: ECR with lifecycle policies
 ✅ **Database**: RDS PostgreSQL with proper security
-✅ **Load Balancer**: ALB with health checks
+✅ **ECS Fargate**: Direct container access with public IPs
 ✅ **Monitoring**: CloudWatch logs and health endpoints
 ✅ **CI/CD**: GitHub Actions for automated deployments
-✅ **Security**: Proper IAM roles and security groups
-✅ **Health Checks**: Container and ALB health monitoring
+✅ **Security**: Proper security groups and network configuration
+✅ **Health Checks**: Container health monitoring
 
 ## Architecture
 
 ```
-GitHub → Actions → ECR → ECS Fargate → ALB → Internet
+GitHub → Actions → ECR → ECS Fargate (Public IP) → Internet
                     ↓
                   RDS PostgreSQL
 ```

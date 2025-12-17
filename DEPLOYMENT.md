@@ -6,9 +6,8 @@ This project deploys a Strapi application on AWS ECS Fargate using Terraform and
 
 ## Architecture
 
-- **ECS Fargate**: Runs the containerized Strapi application
+- **ECS Fargate**: Runs the containerized Strapi application with public IP
 - **RDS PostgreSQL**: Database for Strapi
-- **Application Load Balancer**: Routes traffic to ECS tasks
 - **ECR**: Stores Docker images
 - **CloudWatch**: Logs and monitoring
 
@@ -79,12 +78,12 @@ The deployment happens automatically when you push to the `main` or `master` bra
 
 ## Accessing the Application
 
-After deployment, the application will be available at the Load Balancer DNS name (check Terraform outputs).
+After deployment, the application will be available at the ECS task's public IP address on port 1337 (check ECS console for task details).
 
 ## Monitoring
 
 - **CloudWatch Logs**: `/ecs/strapi-aditya`
-- **Health Check**: `http://your-alb-dns/_health`
+- **Health Check**: `http://task-public-ip:1337/_health`
 - **ECS Console**: Monitor service status and tasks
 
 ## Troubleshooting
