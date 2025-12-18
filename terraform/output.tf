@@ -11,7 +11,7 @@ output "ecs_service_name" {
 }
 
 output "rds_endpoint" {
-  value = aws_db_instance.strapi_rds.address
+  value = aws_db_instance.strapi.address
 }
 
 output "deployed_image" {
@@ -21,3 +21,8 @@ output "deployed_image" {
 output "ecs_service_info" {
   value = "ECS service deployed - check ECS console for task public IPs"
 }
+
+output "alb_dns_name" {
+  value = aws_lb.strapi.dns_name
+}
+
