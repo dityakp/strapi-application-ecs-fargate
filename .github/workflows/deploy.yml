@@ -86,6 +86,16 @@ jobs:
         echo "image=$IMAGE_URI" >> $GITHUB_OUTPUT
         echo "🐳 Deploying image: $IMAGE_URI"
 
+    - name: Update terraform.tfvars with new image URI
+      if: github.event.inputs.action == 'deploy'
+      run: |
+        # Update the image_uri in terraform.tfvars
+        sed -i "s|image_uri = \".*\"|image_uri = \"${{ steps.set-image.outputs.image }}\"|g" terraform/terraform.tfvars
+        echo "✅ Updated terraform.tfvars with new image URI"
+        
+        # Show the updated line
+        grep "image_uri" terraform/terraform.tfvars
+
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
       with:
@@ -161,6 +171,20 @@ jobs:
         echo "🔄 Updating ECS service..."
         aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --force-new-deployment
         
+    - name: Commit updated terraform.tfvars
+      if: github.event.inputs.action == 'deploy'
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add terraform/terraform.tfvars
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "Update terraform.tfvars with deployed image: ${{ steps.set-image.outputs.image }}"
+          git push
+          echo "✅ Updated terraform.tfvars committed to repository"
+        fi
+
     - name: Deployment Summary
       if: github.event.inputs.action == 'deploy'
       run: |
@@ -168,6 +192,7 @@ jobs:
         echo "🐳 Image: ${{ steps.set-image.outputs.image }}" >> $GITHUB_STEP_SUMMARY
         echo "🚀 ECS Service: $ECS_SERVICE" >> $GITHUB_STEP_SUMMARY
         echo "📍 Region: $AWS_REGION" >> $GITHUB_STEP_SUMMARY
+        echo "📝 terraform.tfvars updated with latest image URI" >> $GITHUB_STEP_SUMMARY
 
     - name: Destruction Summary
       if: github.event.inputs.action == 'destroy'
