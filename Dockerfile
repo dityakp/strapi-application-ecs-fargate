@@ -12,6 +12,8 @@ WORKDIR /app
 
 # Copy package files and install dependencies
 COPY package.json package-lock.json* ./
+
+# Install all dependencies including pg
 RUN npm install
 RUN npm install pg --save
 
@@ -29,14 +31,18 @@ ENV ADMIN_JWT_SECRET=dummy-secret-for-build
 ENV TRANSFER_TOKEN_SALT=dummy-salt-for-build
 ENV JWT_SECRET=dummy-secret-for-build
 
+# Build the application
 RUN npm run build
 
-# Clean up dev dependencies after build
-RUN npm prune --production
-
-# Create non-root user
-RUN groupadd -r strapi && useradd -r -g strapi strapi
+# Create non-root user and set permissions BEFORE pruning
+RUN groupadd -r strapi && useradd -r -g strapi strapi -m
 RUN chown -R strapi:strapi /app
+
+# Clean up dev dependencies after build (but keep pg)
+RUN npm prune --production
+RUN npm install pg --save --production
+
+# Switch to non-root user
 USER strapi
 
 EXPOSE 1337
