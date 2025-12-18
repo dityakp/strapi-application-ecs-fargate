@@ -14,9 +14,9 @@ provider "aws" {
 
 data "aws_caller_identity" "current" {}
 
-# =======================
+# ============================================================
 # NETWORK
-# =======================
+# ============================================================
 
 data "aws_vpc" "default" {
   default = true
@@ -29,20 +29,27 @@ data "aws_subnets" "default_subnets" {
   }
 }
 
-# =======================
-# ECR
-# =======================
-
-resource "aws_ecr_repository" "strapi" {
-  name         = "strapi-aditya"
-  force_delete = true
+# Fetch details for each subnet
+data "aws_subnet" "default" {
+  for_each = toset(data.aws_subnets.default_subnets.ids)
+  id       = each.value
 }
 
-# =======================
-# SECURITY GROUPS
-# =======================
+# ✅ FIXED: pick ONE subnet per AZ (ALB requirement)
+locals {
+  alb_subnets = [
+    for az, subnets in {
+      for s in data.aws_subnet.default :
+      s.availability_zone => s.id...
+    } : subnets[0]
+  ]
+}
 
-# ALB SG (Public)
+# ============================================================
+# SECURITY GROUPS
+# ============================================================
+
+# ALB Security Group (public HTTP)
 resource "aws_security_group" "alb_sg" {
   name   = "strapi-alb-sg-aditya"
   vpc_id = data.aws_vpc.default.id
@@ -62,7 +69,7 @@ resource "aws_security_group" "alb_sg" {
   }
 }
 
-# ECS SG (Internal)
+# ECS Security Group (only ALB can reach ECS)
 resource "aws_security_group" "ecs_sg" {
   name   = "strapi-ecs-sg-aditya"
   vpc_id = data.aws_vpc.default.id
@@ -82,7 +89,7 @@ resource "aws_security_group" "ecs_sg" {
   }
 }
 
-# RDS SG
+# RDS Security Group
 resource "aws_security_group" "rds_sg" {
   name   = "strapi-rds-sg-aditya"
   vpc_id = data.aws_vpc.default.id
@@ -97,9 +104,9 @@ resource "aws_security_group_rule" "ecs_to_rds" {
   source_security_group_id = aws_security_group.ecs_sg.id
 }
 
-# =======================
+# ============================================================
 # RDS POSTGRES
-# =======================
+# ============================================================
 
 resource "aws_db_subnet_group" "strapi" {
   name       = "strapi-db-subnet-group-aditya"
@@ -121,20 +128,20 @@ resource "aws_db_instance" "strapi" {
   db_subnet_group_name   = aws_db_subnet_group.strapi.name
 }
 
-# =======================
+# ============================================================
 # ALB
-# =======================
+# ============================================================
 
 resource "aws_lb" "strapi" {
   name               = "strapi-alb-aditya"
   load_balancer_type = "application"
   internal           = false
   security_groups    = [aws_security_group.alb_sg.id]
-  subnets            = data.aws_subnets.default_subnets.ids
+  subnets            = local.alb_subnets
 }
 
 resource "aws_lb_target_group" "strapi" {
-  name        = "strapi-tg-aditya"
+  name        = "strapi-tg-aditya-v2"
   port        = 1337
   protocol    = "HTTP"
   target_type = "ip"
@@ -161,9 +168,9 @@ resource "aws_lb_listener" "http" {
   }
 }
 
-# =======================
+# ============================================================
 # ECS
-# =======================
+# ============================================================
 
 resource "aws_ecs_cluster" "strapi" {
   name = "strapi-cluster-aditya"
