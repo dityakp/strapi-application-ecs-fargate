@@ -29,13 +29,11 @@ data "aws_subnets" "default_subnets" {
   }
 }
 
-# Fetch details for each subnet
 data "aws_subnet" "default" {
   for_each = toset(data.aws_subnets.default_subnets.ids)
   id       = each.value
 }
 
-# ✅ FIXED: pick ONE subnet per AZ (ALB requirement)
 locals {
   alb_subnets = [
     for az, subnets in {
@@ -49,7 +47,6 @@ locals {
 # SECURITY GROUPS
 # ============================================================
 
-# ALB Security Group (public HTTP)
 resource "aws_security_group" "alb_sg" {
   name   = "strapi-alb-sg-aditya"
   vpc_id = data.aws_vpc.default.id
@@ -69,7 +66,6 @@ resource "aws_security_group" "alb_sg" {
   }
 }
 
-# ECS Security Group (only ALB can reach ECS)
 resource "aws_security_group" "ecs_sg" {
   name   = "strapi-ecs-sg-aditya"
   vpc_id = data.aws_vpc.default.id
@@ -89,7 +85,6 @@ resource "aws_security_group" "ecs_sg" {
   }
 }
 
-# RDS Security Group
 resource "aws_security_group" "rds_sg" {
   name   = "strapi-rds-sg-aditya"
   vpc_id = data.aws_vpc.default.id
@@ -169,11 +164,24 @@ resource "aws_lb_listener" "http" {
 }
 
 # ============================================================
-# ECS
+# ECS (FARGATE SPOT)
 # ============================================================
 
 resource "aws_ecs_cluster" "strapi" {
   name = "strapi-cluster-aditya"
+}
+
+resource "aws_ecs_cluster_capacity_providers" "strapi" {
+  cluster_name = aws_ecs_cluster.strapi.name
+
+  capacity_providers = [
+    "FARGATE_SPOT"
+  ]
+
+  default_capacity_provider_strategy {
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 1
+  }
 }
 
 resource "aws_cloudwatch_log_group" "strapi" {
@@ -195,9 +203,9 @@ resource "aws_ecs_task_definition" "strapi" {
       image     = var.image_uri
       essential = true
 
-      portMappings = [{
-        containerPort = 1337
-      }]
+      portMappings = [
+        { containerPort = 1337 }
+      ]
 
       environment = [
         { name = "HOST", value = "0.0.0.0" },
@@ -233,7 +241,11 @@ resource "aws_ecs_service" "strapi" {
   cluster         = aws_ecs_cluster.strapi.id
   task_definition = aws_ecs_task_definition.strapi.arn
   desired_count   = 1
-  launch_type     = "FARGATE"
+
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 1
+  }
 
   network_configuration {
     subnets         = data.aws_subnets.default_subnets.ids
@@ -246,5 +258,8 @@ resource "aws_ecs_service" "strapi" {
     container_port   = 1337
   }
 
-  depends_on = [aws_lb_listener.http]
+  depends_on = [
+    aws_lb_listener.http,
+    aws_ecs_cluster_capacity_providers.strapi
+  ]
 }
