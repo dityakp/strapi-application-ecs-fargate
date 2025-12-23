@@ -224,10 +224,12 @@ resource "aws_ecs_service" "strapi" {
   desired_count   = 1
   launch_type     = "FARGATE"
 
-  network_configuration {
-    subnets         = data.aws_subnets.default_subnets.ids
-    security_groups = [aws_security_group.ecs_sg.id]
-  }
+network_configuration {
+  subnets         = data.aws_subnets.default_subnets.ids
+  security_groups = [aws_security_group.ecs_sg.id]
+  assign_public_ip = true
+}
+
 
   load_balancer {
     target_group_arn = aws_lb_target_group.strapi.arn
