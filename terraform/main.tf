@@ -12,6 +12,10 @@ provider "aws" {
   region = var.aws_region
 }
 
+# ============================================================
+# ACCOUNT
+# ============================================================
+
 data "aws_caller_identity" "current" {}
 
 # ============================================================
@@ -29,31 +33,50 @@ data "aws_subnets" "default_subnets" {
   }
 }
 
-data "aws_subnet" "default" {
-  for_each = toset(data.aws_subnets.default_subnets.ids)
-  id       = each.value
+# ============================================================
+# ECR (PRIVATE)
+# ============================================================
+
+resource "aws_ecr_repository" "strapi" {
+  name                 = "strapi-aditya"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
 }
 
-locals {
-  alb_subnets = [
-    for az, subnets in {
-      for s in data.aws_subnet.default :
-      s.availability_zone => s.id...
-    } : subnets[0]
-  ]
+resource "aws_ecr_lifecycle_policy" "strapi" {
+  repository = aws_ecr_repository.strapi.name
+
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Keep last 10 images"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        countNumber = 10
+      }
+      action = {
+        type = "expire"
+      }
+    }]
+  })
 }
 
 # ============================================================
 # SECURITY GROUPS
 # ============================================================
 
-resource "aws_security_group" "alb_sg" {
-  name   = "strapi-alb-sg-aditya"
+resource "aws_security_group" "strapi_sg" {
+  name   = "strapi-ecs-sg-aditya"
   vpc_id = data.aws_vpc.default.id
 
   ingress {
-    from_port   = 80
-    to_port     = 80
+    from_port   = 1337
+    to_port     = 1337
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -66,110 +89,59 @@ resource "aws_security_group" "alb_sg" {
   }
 }
 
-resource "aws_security_group" "ecs_sg" {
-  name   = "strapi-ecs-sg-aditya"
-  vpc_id = data.aws_vpc.default.id
-
-  ingress {
-    from_port       = 1337
-    to_port         = 1337
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb_sg.id]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-resource "aws_security_group" "rds_sg" {
+resource "aws_security_group" "strapi_rds_sg" {
   name   = "strapi-rds-sg-aditya"
   vpc_id = data.aws_vpc.default.id
 }
 
-resource "aws_security_group_rule" "ecs_to_rds" {
+resource "aws_security_group_rule" "allow_ecs_to_rds" {
   type                     = "ingress"
   from_port                = 5432
   to_port                  = 5432
   protocol                 = "tcp"
-  security_group_id        = aws_security_group.rds_sg.id
-  source_security_group_id = aws_security_group.ecs_sg.id
+  security_group_id        = aws_security_group.strapi_rds_sg.id
+  source_security_group_id = aws_security_group.strapi_sg.id
 }
 
 # ============================================================
-# RDS
+# RDS (POSTGRES)
 # ============================================================
 
-resource "aws_db_subnet_group" "strapi" {
+resource "aws_db_subnet_group" "strapi_db_subnet_group" {
   name       = "strapi-db-subnet-group-aditya"
   subnet_ids = data.aws_subnets.default_subnets.ids
 }
 
-resource "aws_db_instance" "strapi" {
+resource "aws_db_instance" "strapi_rds" {
   identifier             = "strapi-db-aditya"
+  allocated_storage      = 20
   engine                 = "postgres"
   engine_version         = "15"
   instance_class         = "db.t3.micro"
-  allocated_storage      = 20
   db_name                = var.db_name
   username               = var.db_username
   password               = var.db_password
   skip_final_snapshot    = true
   publicly_accessible    = false
-  vpc_security_group_ids = [aws_security_group.rds_sg.id]
-  db_subnet_group_name   = aws_db_subnet_group.strapi.name
+  vpc_security_group_ids = [aws_security_group.strapi_rds_sg.id]
+  db_subnet_group_name   = aws_db_subnet_group.strapi_db_subnet_group.name
 }
 
 # ============================================================
-# ALB
+# CLOUDWATCH LOGS
 # ============================================================
-
-resource "aws_lb" "strapi" {
-  name               = "strapi-alb-aditya"
-  load_balancer_type = "application"
-  internal           = false
-  security_groups    = [aws_security_group.alb_sg.id]
-  subnets            = local.alb_subnets
-}
-
-resource "aws_lb_target_group" "strapi" {
-  name        = "strapi-tg-aditya"
-  port        = 1337
-  protocol    = "HTTP"
-  target_type = "ip"
-  vpc_id      = data.aws_vpc.default.id
-
-  health_check {
-    path    = "/"
-    matcher = "200-399"
-  }
-}
-
-resource "aws_lb_listener" "http" {
-  load_balancer_arn = aws_lb.strapi.arn
-  port              = 80
-  protocol          = "HTTP"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.strapi.arn
-  }
-}
-
-# ============================================================
-# ECS
-# ============================================================
-
-resource "aws_ecs_cluster" "strapi" {
-  name = "strapi-cluster-aditya"
-}
 
 resource "aws_cloudwatch_log_group" "strapi" {
   name              = "/ecs/strapi-aditya"
   retention_in_days = 7
+}
+
+# ============================================================
+# ECS (FARGATE)
+# ============================================================
+
+resource "aws_ecs_cluster" "strapi" {
+  name = "strapi-cluster-aditya"
 }
 
 resource "aws_ecs_task_definition" "strapi" {
@@ -178,7 +150,7 @@ resource "aws_ecs_task_definition" "strapi" {
   network_mode             = "awsvpc"
   cpu                      = 512
   memory                   = 1024
-  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+  execution_role_arn       = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/ecsTaskExecutionRole"
 
   container_definitions = jsonencode([
     {
@@ -186,33 +158,46 @@ resource "aws_ecs_task_definition" "strapi" {
       image     = var.image_uri
       essential = true
 
-      portMappings = [{ containerPort = 1337 }]
+      portMappings = [{
+        containerPort = 1337
+        protocol      = "tcp"
+      }]
+
+      healthCheck = {
+        command = ["CMD-SHELL", "curl -f http://localhost:1337/_health || exit 1"]
+        interval = 30
+        timeout = 5
+        retries = 3
+        startPeriod = 60
+      }
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.strapi.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "ecs"
+        }
+      }
 
       environment = [
+        { name = "NODE_ENV", value = "production" },
         { name = "HOST", value = "0.0.0.0" },
         { name = "PORT", value = "1337" },
         { name = "DATABASE_CLIENT", value = "postgres" },
-        { name = "DATABASE_HOST", value = aws_db_instance.strapi.address },
+        { name = "DATABASE_HOST", value = aws_db_instance.strapi_rds.address },
         { name = "DATABASE_PORT", value = "5432" },
         { name = "DATABASE_NAME", value = var.db_name },
         { name = "DATABASE_USERNAME", value = var.db_username },
         { name = "DATABASE_PASSWORD", value = var.db_password },
-        { name = "DATABASE_SSL", value = "false" },
+        { name = "DATABASE_SSL", value = "true" },
+        { name = "DATABASE_SSL__REJECT_UNAUTHORIZED", value = "false" },
         { name = "APP_KEYS", value = var.app_keys },
         { name = "API_TOKEN_SALT", value = var.api_token_salt },
         { name = "ADMIN_JWT_SECRET", value = var.admin_jwt_secret },
         { name = "TRANSFER_TOKEN_SALT", value = var.transfer_token_salt },
         { name = "JWT_SECRET", value = var.jwt_secret }
       ]
-
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          awslogs-group         = aws_cloudwatch_log_group.strapi.name
-          awslogs-region        = var.aws_region
-          awslogs-stream-prefix = "ecs"
-        }
-      }
     }
   ])
 }
@@ -224,18 +209,11 @@ resource "aws_ecs_service" "strapi" {
   desired_count   = 1
   launch_type     = "FARGATE"
 
-network_configuration {
-  subnets         = data.aws_subnets.default_subnets.ids
-  security_groups = [aws_security_group.ecs_sg.id]
-  assign_public_ip = true
-}
-
-
-  load_balancer {
-    target_group_arn = aws_lb_target_group.strapi.arn
-    container_name   = "strapi-aditya"
-    container_port   = 1337
+  network_configuration {
+    subnets          = data.aws_subnets.default_subnets.ids
+    security_groups  = [aws_security_group.strapi_sg.id]
+    assign_public_ip = true
   }
 
-  depends_on = [aws_lb_listener.http]
+  depends_on = [aws_db_instance.strapi_rds]
 }

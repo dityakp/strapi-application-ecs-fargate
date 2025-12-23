@@ -11,38 +11,18 @@ on:
           - deploy
           - destroy
         default: deploy
-  workflow_run:
-    workflows: ["CI - Build and Push Image"]
-    types:
-      - completed
-    branches: [main, master]
-
-permissions:
-  contents: read
 
 env:
   AWS_REGION: ap-south-1
   ECR_REPOSITORY: strapi-aditya
   ECS_SERVICE: strapi-service-aditya
   ECS_CLUSTER: strapi-cluster-aditya
+  ECS_TASK_DEFINITION: strapi-task-aditya
 
 jobs:
   deploy:
-    name: ${{ (github.event.inputs.action == 'deploy' || github.event_name == 'workflow_run') && 'Deploy to ECS' || 'Destroy Infrastructure' }}
+    name: ${{ github.event.inputs.action == 'deploy' && 'Deploy to ECS' || 'Destroy Infrastructure' }}
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
-
-    steps:
-    - name: Set Action Type
-      id: set-action
-      run: |
-        if [ "${{ github.event_name }}" = "workflow_run" ]; then
-          echo "action=deploy" >> $GITHUB_OUTPUT
-          echo "🚀 Auto-deploying after successful CI build"
-        else
-          echo "action=${{ github.event.inputs.action }}" >> $GITHUB_OUTPUT
-          echo "🎯 Manual deployment: ${{ github.event.inputs.action }}"
-        fi
 
     steps:
     - name: Checkout
@@ -56,51 +36,54 @@ jobs:
         aws-region: ${{ env.AWS_REGION }}
 
     - name: Login to Amazon ECR
-      if: steps.set-action.outputs.action == 'deploy'
+      if: github.event.inputs.action == 'deploy'
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Check if ECR Repository Exists
-      if: steps.set-action.outputs.action == 'deploy'
-      id: check-repo
-      run: |
-        if aws ecr describe-repositories --repository-names $ECR_REPOSITORY --region $AWS_REGION 2>/dev/null; then
-          echo "exists=true" >> $GITHUB_OUTPUT
-        else
-          echo "exists=false" >> $GITHUB_OUTPUT
-        fi
-
-    - name: Get Latest Image Tag
-      if: steps.set-action.outputs.action == 'deploy' && steps.check-repo.outputs.exists == 'true'
+    - name: Get Latest Image Tag (Auto-fetch)
+      if: github.event.inputs.action == 'deploy'
       id: get-latest-tag
       run: |
-        TAG=$(aws ecr describe-images \
-          --repository-name $ECR_REPOSITORY \
-          --region $AWS_REGION \
-          --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \
-          --output text)
-
-        if [ -z "$TAG" ] || [ "$TAG" = "None" ]; then
-          echo "tag=latest" >> $GITHUB_OUTPUT
+        # Check if ECR repository exists and has images
+        if aws ecr describe-repositories --repository-names $ECR_REPOSITORY --region $AWS_REGION >/dev/null 2>&1; then
+          echo "✅ ECR repository exists"
+          
+          # Get the latest image tag from ECR (most recently pushed)
+          LATEST_TAG=$(aws ecr describe-images --repository-name $ECR_REPOSITORY --region $AWS_REGION \
+            --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' --output text 2>/dev/null || echo "")
+          
+          if [ "$LATEST_TAG" != "None" ] && [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "null" ]; then
+            echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+            echo "🏷️ Latest image tag found: $LATEST_TAG"
+          else
+            echo "tag=latest" >> $GITHUB_OUTPUT
+            echo "⚠️ No tagged images found, using 'latest'"
+          fi
         else
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "tag=latest" >> $GITHUB_OUTPUT
+          echo "⚠️ ECR repository doesn't exist yet, using 'latest' (will be created by Terraform)"
         fi
 
-    - name: Set Default Image Tag
-      if: steps.set-action.outputs.action == 'deploy' && steps.check-repo.outputs.exists == 'false'
-      id: set-default-tag
-      run: echo "tag=latest" >> $GITHUB_OUTPUT
-
     - name: Set Image URI
-      if: steps.set-action.outputs.action == 'deploy'
+      if: github.event.inputs.action == 'deploy'
       id: set-image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ steps.get-latest-tag.outputs.tag || steps.set-default-tag.outputs.tag }}
+        IMAGE_TAG: ${{ steps.get-latest-tag.outputs.tag }}
       run: |
         IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
         echo "image=$IMAGE_URI" >> $GITHUB_OUTPUT
-        echo "🐳 Deploying image: $IMAGE_URI"
+        echo "🐳 Will deploy image: $IMAGE_URI"
+
+    - name: Update terraform.tfvars with new image URI
+      if: github.event.inputs.action == 'deploy'
+      run: |
+        # Update the image_uri in terraform.tfvars
+        sed -i "s|image_uri = \".*\"|image_uri = \"${{ steps.set-image.outputs.image }}\"|g" terraform/terraform.tfvars
+        echo "✅ Updated terraform.tfvars with new image URI"
+        
+        # Show the updated line
+        grep "image_uri" terraform/terraform.tfvars
 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
@@ -112,7 +95,7 @@ jobs:
       run: terraform init
 
     - name: Terraform Plan (Deploy)
-      if: steps.set-action.outputs.action == 'deploy'
+      if: github.event.inputs.action == 'deploy'
       working-directory: ./terraform
       env:
         TF_VAR_image_uri: ${{ steps.set-image.outputs.image }}
@@ -122,10 +105,27 @@ jobs:
         TF_VAR_admin_jwt_secret: ${{ secrets.ADMIN_JWT_SECRET }}
         TF_VAR_transfer_token_salt: ${{ secrets.TRANSFER_TOKEN_SALT }}
         TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
-      run: terraform plan
+      run: |
+        echo "📋 Planning deployment..."
+        terraform plan
+
+    - name: Terraform Plan (Destroy)
+      if: github.event.inputs.action == 'destroy'
+      working-directory: ./terraform
+      env:
+        TF_VAR_image_uri: "301782007642.dkr.ecr.ap-south-1.amazonaws.com/strapi-aditya:latest"
+        TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+        TF_VAR_app_keys: ${{ secrets.APP_KEYS }}
+        TF_VAR_api_token_salt: ${{ secrets.API_TOKEN_SALT }}
+        TF_VAR_admin_jwt_secret: ${{ secrets.ADMIN_JWT_SECRET }}
+        TF_VAR_transfer_token_salt: ${{ secrets.TRANSFER_TOKEN_SALT }}
+        TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+      run: |
+        echo "🗑️ Planning destruction..."
+        terraform plan -destroy
 
     - name: Terraform Apply (Deploy)
-      if: steps.set-action.outputs.action == 'deploy'
+      if: github.event.inputs.action == 'deploy'
       working-directory: ./terraform
       env:
         TF_VAR_image_uri: ${{ steps.set-image.outputs.image }}
@@ -135,25 +135,58 @@ jobs:
         TF_VAR_admin_jwt_secret: ${{ secrets.ADMIN_JWT_SECRET }}
         TF_VAR_transfer_token_salt: ${{ secrets.TRANSFER_TOKEN_SALT }}
         TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
-      run: terraform apply -auto-approve
+      run: |
+        echo "🚀 Applying deployment..."
+        terraform apply -auto-approve
 
     - name: Terraform Destroy
-      if: steps.set-action.outputs.action == 'destroy'
+      if: github.event.inputs.action == 'destroy'
       working-directory: ./terraform
       env:
-        TF_VAR_image_uri: "latest"
+        TF_VAR_image_uri: "301782007642.dkr.ecr.ap-south-1.amazonaws.com/strapi-aditya:latest"
         TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
         TF_VAR_app_keys: ${{ secrets.APP_KEYS }}
         TF_VAR_api_token_salt: ${{ secrets.API_TOKEN_SALT }}
         TF_VAR_admin_jwt_secret: ${{ secrets.ADMIN_JWT_SECRET }}
         TF_VAR_transfer_token_salt: ${{ secrets.TRANSFER_TOKEN_SALT }}
         TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
-      run: terraform destroy -auto-approve
-
-    - name: Deployment Summary
-      if: steps.set-action.outputs.action == 'deploy'
       run: |
-        echo "✅ Deployment successful" >> $GITHUB_STEP_SUMMARY
+        echo "� RDestroying infrastructure..."
+        terraform destroy -auto-approve
+
+    - name: Force ECS Service Update
+      if: github.event.inputs.action == 'deploy'
+      run: |
+        echo "🔄 Updating ECS service..."
+        aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --force-new-deployment
+
+    - name: Commit updated terraform.tfvars
+      if: github.event.inputs.action == 'deploy'
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add terraform/terraform.tfvars
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "Update terraform.tfvars with deployed image: ${{ steps.set-image.outputs.image }}"
+          git push
+          echo "✅ Updated terraform.tfvars committed to repository"
+        fi
+        
+    - name: Deployment Summary
+      if: github.event.inputs.action == 'deploy'
+      run: |
+        echo "✅ Deployment completed successfully!" >> $GITHUB_STEP_SUMMARY
         echo "🐳 Image: ${{ steps.set-image.outputs.image }}" >> $GITHUB_STEP_SUMMARY
         echo "🚀 ECS Service: $ECS_SERVICE" >> $GITHUB_STEP_SUMMARY
         echo "📍 Region: $AWS_REGION" >> $GITHUB_STEP_SUMMARY
+        echo "📝 terraform.tfvars updated with latest image URI" >> $GITHUB_STEP_SUMMARY
+
+    - name: Destruction Summary
+      if: github.event.inputs.action == 'destroy'
+      run: |
+        echo "💥 Infrastructure destroyed successfully!" >> $GITHUB_STEP_SUMMARY
+        echo "🗑️ All AWS resources have been removed" >> $GITHUB_STEP_SUMMARY
+        echo "📍 Region: $AWS_REGION" >> $GITHUB_STEP_SUMMARY
+        echo "⚠️ Database data has been permanently deleted" >> $GITHUB_STEP_SUMMARY
