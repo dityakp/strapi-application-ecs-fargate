@@ -1,6 +1,6 @@
 aws_region = "ap-south-1"
 
-image_uri = "301782007642.dkr.ecr.ap-south-1.amazonaws.com/strapi-aditya:3972a5755e957aff31d0d0c91ed920292dc4b046"
+image_uri = "301782007642.dkr.ecr.ap-south-1.amazonaws.com/strapi-aditya:aa1b6ad47d9cb7dae470891cfd6c6b75d3649611"
  # injected by GitHub Actions
 
 db_name     = "strapi_db"
