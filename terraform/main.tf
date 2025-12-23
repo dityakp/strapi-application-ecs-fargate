@@ -100,7 +100,7 @@ resource "aws_security_group_rule" "ecs_to_rds" {
 }
 
 # ============================================================
-# RDS POSTGRES
+# RDS
 # ============================================================
 
 resource "aws_db_subnet_group" "strapi" {
@@ -136,19 +136,15 @@ resource "aws_lb" "strapi" {
 }
 
 resource "aws_lb_target_group" "strapi" {
-  name        = "strapi-tg-aditya-v2"
+  name        = "strapi-tg-aditya"
   port        = 1337
   protocol    = "HTTP"
   target_type = "ip"
   vpc_id      = data.aws_vpc.default.id
 
   health_check {
-    path                = "/"
-    interval            = 30
-    timeout             = 5
-    healthy_threshold   = 2
-    unhealthy_threshold = 3
-    matcher             = "200-399"
+    path    = "/"
+    matcher = "200-399"
   }
 }
 
@@ -164,24 +160,11 @@ resource "aws_lb_listener" "http" {
 }
 
 # ============================================================
-# ECS (FARGATE SPOT)
+# ECS
 # ============================================================
 
 resource "aws_ecs_cluster" "strapi" {
   name = "strapi-cluster-aditya"
-}
-
-resource "aws_ecs_cluster_capacity_providers" "strapi" {
-  cluster_name = aws_ecs_cluster.strapi.name
-
-  capacity_providers = [
-    "FARGATE_SPOT"
-  ]
-
-  default_capacity_provider_strategy {
-    capacity_provider = "FARGATE_SPOT"
-    weight            = 1
-  }
 }
 
 resource "aws_cloudwatch_log_group" "strapi" {
@@ -195,7 +178,7 @@ resource "aws_ecs_task_definition" "strapi" {
   network_mode             = "awsvpc"
   cpu                      = 512
   memory                   = 1024
-  execution_role_arn       = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/ecsTaskExecutionRole"
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
 
   container_definitions = jsonencode([
     {
@@ -203,9 +186,7 @@ resource "aws_ecs_task_definition" "strapi" {
       image     = var.image_uri
       essential = true
 
-      portMappings = [
-        { containerPort = 1337 }
-      ]
+      portMappings = [{ containerPort = 1337 }]
 
       environment = [
         { name = "HOST", value = "0.0.0.0" },
@@ -241,11 +222,7 @@ resource "aws_ecs_service" "strapi" {
   cluster         = aws_ecs_cluster.strapi.id
   task_definition = aws_ecs_task_definition.strapi.arn
   desired_count   = 1
-
-  capacity_provider_strategy {
-    capacity_provider = "FARGATE_SPOT"
-    weight            = 1
-  }
+  launch_type     = "FARGATE"
 
   network_configuration {
     subnets         = data.aws_subnets.default_subnets.ids
@@ -258,8 +235,5 @@ resource "aws_ecs_service" "strapi" {
     container_port   = 1337
   }
 
-  depends_on = [
-    aws_lb_listener.http,
-    aws_ecs_cluster_capacity_providers.strapi
-  ]
+  depends_on = [aws_lb_listener.http]
 }
