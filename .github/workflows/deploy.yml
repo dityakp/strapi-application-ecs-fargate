@@ -11,6 +11,11 @@ on:
           - deploy
           - destroy
         default: deploy
+  workflow_run:
+    workflows: ["CI - Build and Push Image"]
+    types:
+      - completed
+    branches: [main, master]
 
 permissions:
   contents: read
@@ -23,8 +28,21 @@ env:
 
 jobs:
   deploy:
-    name: ${{ github.event.inputs.action == 'deploy' && 'Deploy to ECS' || 'Destroy Infrastructure' }}
+    name: ${{ (github.event.inputs.action == 'deploy' || github.event_name == 'workflow_run') && 'Deploy to ECS' || 'Destroy Infrastructure' }}
     runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+
+    steps:
+    - name: Set Action Type
+      id: set-action
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_run" ]; then
+          echo "action=deploy" >> $GITHUB_OUTPUT
+          echo "🚀 Auto-deploying after successful CI build"
+        else
+          echo "action=${{ github.event.inputs.action }}" >> $GITHUB_OUTPUT
+          echo "🎯 Manual deployment: ${{ github.event.inputs.action }}"
+        fi
 
     steps:
     - name: Checkout
@@ -38,12 +56,12 @@ jobs:
         aws-region: ${{ env.AWS_REGION }}
 
     - name: Login to Amazon ECR
-      if: github.event.inputs.action == 'deploy'
+      if: steps.set-action.outputs.action == 'deploy'
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
     - name: Check if ECR Repository Exists
-      if: github.event.inputs.action == 'deploy'
+      if: steps.set-action.outputs.action == 'deploy'
       id: check-repo
       run: |
         if aws ecr describe-repositories --repository-names $ECR_REPOSITORY --region $AWS_REGION 2>/dev/null; then
@@ -53,7 +71,7 @@ jobs:
         fi
 
     - name: Get Latest Image Tag
-      if: github.event.inputs.action == 'deploy' && steps.check-repo.outputs.exists == 'true'
+      if: steps.set-action.outputs.action == 'deploy' && steps.check-repo.outputs.exists == 'true'
       id: get-latest-tag
       run: |
         TAG=$(aws ecr describe-images \
@@ -69,12 +87,12 @@ jobs:
         fi
 
     - name: Set Default Image Tag
-      if: github.event.inputs.action == 'deploy' && steps.check-repo.outputs.exists == 'false'
+      if: steps.set-action.outputs.action == 'deploy' && steps.check-repo.outputs.exists == 'false'
       id: set-default-tag
       run: echo "tag=latest" >> $GITHUB_OUTPUT
 
     - name: Set Image URI
-      if: github.event.inputs.action == 'deploy'
+      if: steps.set-action.outputs.action == 'deploy'
       id: set-image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -94,7 +112,7 @@ jobs:
       run: terraform init
 
     - name: Terraform Plan (Deploy)
-      if: github.event.inputs.action == 'deploy'
+      if: steps.set-action.outputs.action == 'deploy'
       working-directory: ./terraform
       env:
         TF_VAR_image_uri: ${{ steps.set-image.outputs.image }}
@@ -107,7 +125,7 @@ jobs:
       run: terraform plan
 
     - name: Terraform Apply (Deploy)
-      if: github.event.inputs.action == 'deploy'
+      if: steps.set-action.outputs.action == 'deploy'
       working-directory: ./terraform
       env:
         TF_VAR_image_uri: ${{ steps.set-image.outputs.image }}
@@ -120,7 +138,7 @@ jobs:
       run: terraform apply -auto-approve
 
     - name: Terraform Destroy
-      if: github.event.inputs.action == 'destroy'
+      if: steps.set-action.outputs.action == 'destroy'
       working-directory: ./terraform
       env:
         TF_VAR_image_uri: "latest"
@@ -133,7 +151,7 @@ jobs:
       run: terraform destroy -auto-approve
 
     - name: Deployment Summary
-      if: github.event.inputs.action == 'deploy'
+      if: steps.set-action.outputs.action == 'deploy'
       run: |
         echo "✅ Deployment successful" >> $GITHUB_STEP_SUMMARY
         echo "🐳 Image: ${{ steps.set-image.outputs.image }}" >> $GITHUB_STEP_SUMMARY
