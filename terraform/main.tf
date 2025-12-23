@@ -33,6 +33,22 @@ data "aws_subnets" "default_subnets" {
   }
 }
 
+# Get subnet details to filter by AZ
+data "aws_subnet" "default" {
+  for_each = toset(data.aws_subnets.default_subnets.ids)
+  id       = each.value
+}
+
+# Create a map of AZ to subnet (one subnet per AZ for ALB)
+locals {
+  alb_subnets = [
+    for az, subnets in {
+      for s in data.aws_subnet.default :
+      s.availability_zone => s.id...
+    } : subnets[0]
+  ]
+}
+
 # ============================================================
 # ECR (PRIVATE)
 # ============================================================
@@ -94,7 +110,7 @@ resource "aws_lb" "strapi_alb" {
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb_sg.id]
-  subnets            = data.aws_subnets.default_subnets.ids
+  subnets            = local.alb_subnets
 
   enable_deletion_protection = false
 }
